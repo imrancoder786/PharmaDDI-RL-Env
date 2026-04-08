@@ -101,9 +101,19 @@ class PharmaDDIEnvironment(Environment):
         self._done: bool = False
         self._last_score: float = 0.0
         self._episode_seed: int = 42
+        # added for every step moniter
+        self._best_score = 0.0
+        self._best_submission = None
+        self._max_steps = 10
 
     def reset(self, task_name: str = None, seed: int = None) -> PharmaDDIObservation:
         """Reset the environment with a new patient scenario."""
+        ########
+        self._best_score = 0.0
+        self._best_submission = None
+        self._state.step_count = 0
+        self._done = False
+        ##########
         self._state = State(episode_id=str(uuid4()), step_count=0)
         self._done = False
         self._last_score = 0.0
@@ -127,15 +137,16 @@ class PharmaDDIEnvironment(Environment):
     def step(self, action: PharmaDDIAction) -> PharmaDDIObservation:
         """
         Grade the agent's drug interaction analysis.
-
-        The agent submits its identified interactions and the environment
-        scores them against ground truth.
+        Supports multi-step episodes: agent can improve answer over multiple attempts.
+        Reward = improvement over previous best score (delta).
+        Episode ends when agent sets action.done = True or max steps reached.
         """
         if self._done:
             return self._build_observation(
                 feedback="Episode already complete. Call reset() to start a new episode.",
-                score=self._last_score,
+                score=self._best_score,
                 done=True,
+                reward=0.0,
             )
 
         self._state.step_count += 1
@@ -145,17 +156,33 @@ class PharmaDDIEnvironment(Environment):
                 feedback="No scenario loaded. Call reset() first.",
                 score=0.0,
                 done=True,
+                reward=0.0,
             )
 
         # Grade the submission
-        score, feedback = self._grade_submission(action)
-        self._last_score = score
-        self._done = True
+        raw_score, feedback = self._grade_submission(action)
+
+        # Clamp raw_score to avoid exact 0.0 or 1.0 (validation requirement)
+        clamped_score = min(max(raw_score, 0.01), 0.99)
+
+        # Reward = improvement over best score so far
+        improvement = max(0.0, clamped_score - self._best_score)
+        if clamped_score > self._best_score:
+            self._best_score = clamped_score
+            self._best_submission = action
+
+        # Episode ends if agent says done OR max steps reached
+        max_steps = 10  # can be made configurable
+        done = action.done or (self._state.step_count >= max_steps)
+
+        if done:
+            self._done = True
 
         return self._build_observation(
             feedback=feedback,
-            score=score,
-            done=True,
+            score=self._best_score,          # cumulative best score
+            reward=improvement,              # step‑wise reward (delta)
+            done=done,
         )
 
     @property
@@ -307,6 +334,7 @@ class PharmaDDIEnvironment(Environment):
         self,
         feedback: str = "",
         score: float = 0.0,
+        reward: float = 0.0,
         done: bool = False,
     ) -> PharmaDDIObservation:
         """Build an observation from the current scenario."""
@@ -326,7 +354,7 @@ class PharmaDDIEnvironment(Environment):
                 score=score,
                 total_interactions=0,
                 done=done,
-                reward=score,
+                reward=reward,
             )
 
         meds = [
@@ -339,7 +367,6 @@ class PharmaDDIEnvironment(Environment):
             for d in scenario.medications
         ]
 
-        # Only hint interaction count for easy mode
         hint_count = len(scenario.ground_truth_interactions) if scenario.task_name == "easy_pair_check" else 0
 
         return PharmaDDIObservation(
@@ -355,14 +382,13 @@ class PharmaDDIEnvironment(Environment):
             score=score,
             total_interactions=hint_count,
             done=done,
-            reward=score,
+            reward=reward,
             metadata={
                 "episode_id": self._state.episode_id,
                 "step": self._state.step_count,
                 "task": scenario.task_name,
             },
         )
-
 
 # ---------------------------------------------------------------------------
 # Direct testing

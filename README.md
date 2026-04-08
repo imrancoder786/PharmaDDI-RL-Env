@@ -74,6 +74,7 @@ class InteractionReport(BaseModel):
 
 class PharmaDDIAction(Action):
     interactions_found: List[InteractionReport]
+    done: bool  # Set to True when the agent is confident and wants to end the episode
 ```
 
 ---
@@ -92,17 +93,33 @@ The environment includes three levels of difficulty:
 
 ## Reward Function
 
-A weighted scoring system (0.0 to 1.0) evaluates agent performance:
+## Reward Function
 
-* Identification Accuracy (30–60%)
-* Severity Classification (25–40%)
-* Recommendation Quality (10–25%)
+The environment supports **multi‑step episodes** with incremental reward shaping:
 
-Penalties include:
+- At each step, the agent receives a **score** (0.0–1.0) based on:
+  - Identification Accuracy (30–60%)
+  - Severity Classification (25–40%)
+  - Recommendation Quality (10–25%)
+- The **reward** for the current step is the **improvement** over the agent’s previous best score.
+- Penalties are applied for:
+  - False positives (incorrect interaction detection)
+  - Missing critical interactions (major or contraindicated)
 
-* False positives (incorrect interaction detection)
-* Missing critical interactions (major or contraindicated)
+This design encourages the agent to iteratively refine its answer using the detailed feedback provided after each attempt.
 
+---
+
+### Multi‑Step Refinement Example
+
+The agent can improve its answer across multiple steps:
+
+```text
+[START] task=medium_multi_drug env=PharmaDDIEnv model=Qwen/Qwen2.5-72B-Instruct
+[STEP] step=1 action={"interactions_found":[...],"done":false} reward=0.10 done=false error=null
+[STEP] step=2 action={"interactions_found":[...],"done":true}  reward=0.89 done=true error=null
+[END] success=true steps=2 score=0.990 rewards=0.10,0.89
+```
 ---
 
 ## Example Workflow
@@ -162,3 +179,4 @@ This project was developed for the Meta x Hugging Face OpenEnv Hackathon.
 The drug interaction knowledge base is derived from publicly available clinical sources and research literature.
 
 Disclaimer: This project is intended for research and educational purposes only. It should not be used for real clinical decision-making.
+---

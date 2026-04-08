@@ -1,7 +1,6 @@
 """
 Baseline inference script for PharmaDDIEnv.
-Uses the OpenAI Python client with HF-provided API key.
-Strictly follows the Meta x HuggingFace OpenEnv Hackathon [START], [STEP], [END] format.
+Multi-step version with feedback refinement.
 """
 
 import asyncio
@@ -21,38 +20,43 @@ MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 ENV_BASE_URL = os.getenv("ENV_BASE_URL") or "http://localhost:8000"
 
 BENCHMARK = "PharmaDDIEnv"
-MAX_STEPS = 15
+MAX_STEPS = 8          # allow up to 8 refinement steps
 TEMPERATURE = 0.1
-MAX_TOKENS = 1000
+MAX_TOKENS = 1200
 
 SYSTEM_PROMPT = textwrap.dedent("""
     You are an expert clinical pharmacist AI assistant.
-    Your job is to assess drug interaction safety for patients.
+    You will review a patient's medication list and identify drug-drug interactions.
 
-    Examine the patient's current medications and identify any dangerous drug-drug interactions.
-    Check EVERY possible pair of medications. Be thorough and accurate.
+    You can submit your findings in multiple steps:
+    - On each step, provide a JSON with "interactions_found" list.
+    - After each submission, you will receive a score (0-1) and detailed feedback.
+    - Use the feedback to improve your next submission: correct severity, add missing interactions, remove false positives.
+    - When you are confident you have the best possible answer, set "done": true.
+
+    Example action JSON:
+    {
+      "interactions_found": [
+        {
+          "drug_a": "lisinopril",
+          "drug_b": "losartan",
+          "severity": "major",
+          "clinical_effect": "increased risk of hyperkalemia",
+          "recommendation": "discontinue"
+        }
+      ],
+      "done": false
+    }
+
     Use only lowercase generic drug names.
     Severity levels: minor | moderate | major | contraindicated
     Recommendations: monitor | adjust_dose | substitute | discontinue
 
-    IMPORTANT: Always respond with a single valid JSON object representing the interactions found.
-    Example format:
-    {
-      "interactions_found": [
-        {
-          "drug_a": "drug_name_lowercase",
-          "drug_b": "drug_name_lowercase",
-          "severity": "major",
-          "clinical_effect": "brief description of the interaction",
-          "recommendation": "substitute"
-        }
-      ]
-    }
-    No explanations outside the JSON.
+    Respond ONLY with valid JSON. No other text.
 """).strip()
 
 
-# -- Logging Helpers (exact hackathon format) --------------------------------
+# -- Logging Helpers ---------------------------------------------------------
 
 def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
@@ -72,57 +76,59 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
     print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
 
 
-# -- LLM Interaction --------------------------------------------------------
+# -- JSON Extraction ---------------------------------------------------------
 
-def get_model_message(client: OpenAI, step: int, last_obs: dict, last_reward: float, history: List[str]) -> str:
-    history_block = "\n".join(history[-6:]) if history else "None"
-    
-    meds = last_obs.get("medications", [])
-    med_lines = []
-    for m in meds:
-        med_lines.append(f"- {m.get('name', 'Unknown')} ({m.get('therapeutic_class', '')}) {m.get('common_dose', '')} {m.get('frequency', '')}")
-    med_list = "\n".join(med_lines)
-    
-    user_prompt = textwrap.dedent(f"""
-        Patient Age: {last_obs.get('patient_age')}
-        Patient Conditions: {', '.join(last_obs.get('patient_conditions', []))}
-        
-        Current Medications:
+def extract_json(text: str) -> dict:
+    """Robust JSON extraction from model output."""
+    # Try direct parse
+    try:
+        return json.loads(text.strip())
+    except:
+        pass
+
+    # Try to find JSON object via regex
+    match = re.search(r'\{.*\}', text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except:
+            pass
+
+    # Fallback: empty interactions
+    print("[WARN] Could not parse JSON. Returning empty interactions.", flush=True)
+    return {"interactions_found": [], "done": False}
+
+
+# -- Prompt Builder ----------------------------------------------------------
+
+def build_user_prompt(step: int, obs: dict, last_feedback: str, last_score: float) -> str:
+    meds = obs.get("medications", [])
+    med_list = "\n".join([f"- {m['name']} ({m.get('therapeutic_class', '')})" for m in meds])
+
+    feedback_section = last_feedback if last_feedback else "No feedback yet. This is your first attempt."
+
+    return textwrap.dedent(f"""
+        Step: {step}
+        Patient Age: {obs.get('patient_age')}
+        Conditions: {', '.join(obs.get('patient_conditions', []))}
+        Medications:
         {med_list}
-        
-        Instructions:
-        {last_obs.get('instructions', '')}
-        
-        Respond with your findings as a single JSON object.
+
+        Previous Score: {last_score:.3f}
+        Feedback from previous attempt:
+        {feedback_section}
+
+        Provide an improved JSON response with "interactions_found" and a "done" flag (true/false).
     """).strip()
 
-    try:
-        completion = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
-            stream=False,
-        )
-        text = (completion.choices[0].message.content or "").strip()
-        match = re.search(r'\{.*\}', text, re.DOTALL)
-        return match.group() if match else text
-    except Exception as exc:
-        print(f"[DEBUG] Model request failed: {exc}", flush=True)
-        return json.dumps({"interactions_found": []})
 
-
-# -- Task Runner --------------------------------------------------------------
+# -- Task Runner -------------------------------------------------------------
 
 async def run_task(task_name: str):
-    # Create client inside function
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-
-    # Reset environment using a requests Session to handle cookies/state if any
     session = requests.Session()
+
+    # Reset environment
     try:
         reset_resp = session.post(f"{ENV_BASE_URL}/reset", json={"task_name": task_name})
         reset_resp.raise_for_status()
@@ -137,80 +143,84 @@ async def run_task(task_name: str):
     steps_taken = 0
     score = 0.0
     success = False
+    last_feedback = ""
+    done = False
 
     log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
-
-    last_obs = obs
-    last_reward = 0.0
-    done = False
 
     try:
         for step in range(1, MAX_STEPS + 1):
             if done:
                 break
 
-            action_json_str = get_model_message(client, step, last_obs, last_reward, history)
+            # Build prompt with current feedback
+            user_prompt = build_user_prompt(step, obs, last_feedback, score)
 
             try:
-                action_parsed = json.loads(action_json_str)
-                if "interactions_found" not in action_parsed:
-                    action_parsed = {"interactions_found": []}
-            except json.JSONDecodeError:
-                action_parsed = {"interactions_found": []}
+                completion = client.chat.completions.create(
+                    model=MODEL_NAME,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=TEMPERATURE,
+                    max_tokens=MAX_TOKENS,
+                )
+                action_text = completion.choices[0].message.content or ""
+            except Exception as e:
+                print(f"[DEBUG] LLM error: {e}", flush=True)
+                action_text = "{}"
 
-            # Our environment expects payload nested in "action" key
-            payload = {"action": action_parsed}
+            action_json = extract_json(action_text)
+            # Ensure required fields
+            if "interactions_found" not in action_json:
+                action_json["interactions_found"] = []
+            if "done" not in action_json:
+                action_json["done"] = False
 
+            # Send to environment
+            payload = {"action": action_json}
             try:
                 step_resp = session.post(f"{ENV_BASE_URL}/step", json=payload)
                 step_resp.raise_for_status()
                 step_data = step_resp.json()
-
-                obs = step_data.get("observation", {})
-                reward = step_data.get("reward", 0.0)
-                if reward is None:
-                    reward = 0.0
-                done = step_data.get("done", False)
-                error = None
             except Exception as e:
-                obs = {}
-                reward = 0.0
-                done = True
-                error = str(e)
+                print(f"[DEBUG] Step error: {e}", flush=True)
+                step_data = {"observation": obs, "reward": 0.0, "done": True}
+
+            obs = step_data.get("observation", obs)
+            reward = step_data.get("reward", 0.0)
+            done = step_data.get("done", False)
+            error = step_data.get("error")
 
             rewards.append(reward)
             steps_taken = step
-            last_obs = obs
-            last_reward = reward
+            score = obs.get("score", score)
+            last_feedback = obs.get("feedback", "")
 
-            # Make action compact for single-line logging
-            compact_action = json.dumps(action_parsed, separators=(',', ':'))
-            log_step(step=step, action=compact_action, reward=reward, done=done, error=error)
-            
-            num_ix = len(action_parsed.get("interactions_found", []))
-            history.append(f"Step {step}: Submitted {num_ix} interactions -> reward {reward:+.2f}")
+            compact_action = json.dumps(action_json, separators=(',', ':'))
+            log_step(step, compact_action, reward, done, error)
+
+            history.append(f"Step {step}: score {score:.3f}, reward +{reward:.3f}")
 
             if done:
                 break
 
-        if rewards:
-            score = max(rewards)  # Single episode, so max/final reward is the score
-        score = min(max(float(score), 0.0), 1.0)
         success = score >= 0.5
 
     except Exception as e:
-        print(f"[DEBUG] Task {task_name} error: {e}", flush=True)
+        print(f"[DEBUG] Task {task_name} fatal error: {e}", flush=True)
 
     finally:
-        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+        log_end(success, steps_taken, score, rewards)
 
 
 # -- Main --------------------------------------------------------------------
 
 async def main() -> None:
-    # Test all 3 tasks
-    for level in ["easy_pair_check", "medium_multi_drug", "hard_polypharmacy"]:
-        await run_task(level)
+    for task in ["easy_pair_check", "medium_multi_drug", "hard_polypharmacy"]:
+        await run_task(task)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -48,6 +48,7 @@ class PharmaDDIAction(Action):
         default_factory=list,
         description="List of identified drug-drug interaction pairs with details"
     )
+    done: bool = False
 
 
 class PharmaDDIObservation(Observation):

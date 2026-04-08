@@ -14,6 +14,7 @@ from .models import (
     InteractionReport,
 )
 
+
 __all__ = [
     "PharmaDDIAction",
     "PharmaDDIObservation",
