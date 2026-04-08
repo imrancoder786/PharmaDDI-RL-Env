@@ -1,195 +1,144 @@
----
-title: PharmaDDI Environment - Drug Interaction Checker
-emoji: 💊
-colorFrom: blue
-colorTo: purple
-sdk: docker
-pinned: false
-app_port: 8000
-base_path: /web
-tags:
-  - openenv
+# PharmaDDI: Clinical Drug-Drug Interaction RL Environment
+### *Empowering AI Agents to Prevent Adverse Drug Events in Complex Polypharmacy*
+
 ---
 
-# PharmaDDI Environment - Pharmaceutical Drug Interaction Checker
+## 🩺 Motivation & Real-World Utility
+**Drug-Drug Interactions (DDIs)** are a leading cause of preventable medical errors, hospitalizations, and mortality worldwide. As patients age and develop multiple chronic conditions, the complexity of their medication regimens (polypharmacy) increases exponentially. 
 
-A clinical pharmacist RL environment where an AI agent reviews patient medication lists and identifies dangerous **drug-drug interactions (DDIs)**. Medication errors cause ~7,000 deaths/year in the US, making automated DDI checking a high-impact real-world application.
+In a typical clinical workflow, a pharmacist must:
+1. Identify all interacting pairs within a list of 5-10+ drugs.
+2. Assess the clinical significance (Severity).
+3. Determine the best course of action (Recommendation) to mitigate risk while maintaining therapeutic efficacy.
 
-## Motivation
+**PharmaDDI** provides a robust, clinically-grounded RL environment to benchmark AI agents on these life-critical decision-making tasks.
 
-Polypharmacy (multiple concurrent medications) is extremely common in elderly patients. Manual drug interaction checking is time-consuming and error-prone. This environment trains and evaluates AI agents on this critical clinical task.
+---
 
-## Quick Start
+## 🎮 Environment Overview
+The **PharmaDDI** environment presents the agent with a patient "Patient Profile" containing:
+- **Demographics**: Age and medical conditions.
+- **Medication List**: Generic names, therapeutic classes, doses, and frequencies.
+
+The agent's goal is to detect and report all clinically significant interactions within the list, simulating the expertise of a board-certified clinical pharmacist.
+
+---
+
+## 🛠 Action & Observation Spaces
+
+### Observation Space
+The agent receives a `PharmaDDIObservation` object containing the clinical context:
 
 ```python
-from PharmaDDIEnv import PharmaDDIAction, PharmaDDIEnv, InteractionReport
+class MedicationInfo(BaseModel):
+    name: str # e.g., "warfarin"
+    therapeutic_class: str # e.g., "anticoagulant"
+    common_dose: str # e.g., "5mg"
+    frequency: str # e.g., "once daily"
 
-# Create environment from Docker image
-env = PharmaDDIEnv.from_docker_image("PharmaDDIEnv-env:latest")
-
-try:
-    result = env.reset()
-    print(f"Patient: {result.observation.patient_id}")
-    print(f"Medications: {[m.name for m in result.observation.medications]}")
-
-    # Submit interaction analysis
-    action = PharmaDDIAction(interactions_found=[
-        InteractionReport(
-            drug_a="warfarin", drug_b="aspirin",
-            severity="major",
-            clinical_effect="Increased bleeding risk",
-            recommendation="monitor"
-        )
-    ])
-    result = env.step(action)
-    print(f"Score: {result.observation.score}")
-    print(f"Feedback: {result.observation.feedback}")
-finally:
-    env.close()
+class PharmaDDIObservation(Observation):
+    patient_id: str
+    patient_age: int
+    patient_conditions: List[str]
+    medications: List[MedicationInfo]
+    num_medications: int
+    instructions: str
 ```
 
-## Building & Running
+### Action Space
+The agent responds with a `PharmaDDIAction` containing a list of interaction reports:
 
+```python
+class InteractionReport(BaseModel):
+    drug_a: str
+    drug_b: str
+    severity: str # minor | moderate | major | contraindicated
+    clinical_effect: str # Clinical consequence
+    recommendation: str # monitor | adjust_dose | substitute | discontinue
+
+class PharmaDDIAction(Action):
+    interactions_found: List[InteractionReport]
+```
+
+---
+
+## 📈 Tasks & Grader Logic
+PharmaDDI features three tasks of increasing clinical complexity:
+
+| Task ID | Medications | Objective | Grader Difficulty |
+| :--- | :--- | :--- | :--- |
+| **`easy_pair_check`** | 2 | Determine if a specific pair interacts. | Focused on binary detection and severity classification. |
+| **`medium_multi_drug`** | 5 | Find ALL interaction pairs in the list. | Requires pairwise exhaustive checking (10 possible pairs). |
+| **`hard_polypharmacy`** | 8 | Manage complex elderly patient regimens. | High penalty for missing critical interactions (Major/Contraindicated). |
+
+---
+
+## ⚖️ Reward Function
+The environment implements a **weighted partial-credit system** (0.0 - 1.0) to encourage precise clinical reasoning:
+
+- **Identification (30-60%)**: Points for finding the correct interacting drug pairs.
+- **Severity Classification (25-40%)**: Points for matching the ground-truth severity.
+- **Recommendations (10-25%)**: Points for suggesting the correct clinical intervention.
+- **Penalties**: 
+    - **False Positives**: Deductions for flagging interactions that do not exist (prevents "alert fatigue").
+    - **Critical Misses**: Large penalties for failing to identify *Major* or *Contraindicated* interactions.
+
+---
+
+## 📊 Baseline Results
+*Model: Qwen/Qwen2.5-72B-Instruct*
+
+- **Easy Code (1 interaction)**: `0.800` ✅
+- **Medium Code (3+ interactions)**: `0.515` ⚠️
+- **Hard Code (7+ interactions)**: `0.000` ❌
+
+The Hard task presents a significant challenge for current instruction-tuned models due to the exhaustive pairwise checking required in polypharmacy scenarios.
+
+---
+
+## 🚀 Setup & Usage
+
+### Local Development
+1. **Clone & Install**:
+   ```bash
+   pip install -e .
+   ```
+2. **Run Server**:
+   ```bash
+   uvicorn server.app:app --host 0.0.0.0 --port 8000
+   ```
+3. **Verify with Validator**:
+   ```bash
+   python vall.py
+   ```
+
+### Docker Deployment
 ```bash
-# Build Docker image
-docker build -t PharmaDDIEnv-env:latest -f server/Dockerfile .
-
-# Run locally (development)
-uvicorn server.app:app --reload --host 0.0.0.0 --port 8000
-
-# Deploy to HF Spaces
-openenv push
+docker build -t pharmaddi-env:latest -f Dockerfile .
+docker run -p 8000:8000 pharmaddi-env:latest
 ```
 
-## Action Space
-
-**`PharmaDDIAction`** - Agent's drug interaction analysis:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `interactions_found` | `List[InteractionReport]` | List of identified DDI pairs |
-
-Each **`InteractionReport`** contains:
-
-| Field | Type | Values |
-|-------|------|--------|
-| `drug_a` | `str` | Drug name (lowercase) |
-| `drug_b` | `str` | Drug name (lowercase) |
-| `severity` | `str` | `minor` \| `moderate` \| `major` \| `contraindicated` |
-| `clinical_effect` | `str` | Description of the interaction mechanism |
-| `recommendation` | `str` | `monitor` \| `adjust_dose` \| `substitute` \| `discontinue` |
-
-## Observation Space
-
-**`PharmaDDIObservation`** - Patient scenario:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `task_name` | `str` | `easy_pair_check` \| `medium_multi_drug` \| `hard_polypharmacy` |
-| `task_difficulty` | `str` | `easy` \| `medium` \| `hard` |
-| `patient_id` | `str` | Unique patient identifier |
-| `patient_age` | `int` | Patient age in years |
-| `patient_conditions` | `List[str]` | Medical conditions |
-| `medications` | `List[MedicationInfo]` | Current medication list |
-| `num_medications` | `int` | Number of medications |
-| `instructions` | `str` | Task-specific instructions |
-| `feedback` | `str` | Grading feedback after submission |
-| `score` | `float` | Score achieved (0.01.0) |
-| `total_interactions` | `int` | Hint for easy mode only |
-
-## Tasks
-
-### Task 1: Easy - Pair Check (2 drugs)
-- Given 2 medications, identify if a DDI exists
-- Classify severity level
-- **Scoring**: 60% pair identification + 40% severity  false positive penalty
-
-### Task 2: Medium - Multi-Drug Review (5 drugs)
-- Review 5 concurrent medications
-- Find ALL interacting pairs and classify severity
-- **Scoring**: 40% pairs + 35% severity + 10% recommendations + 15% precision  critical miss penalty
-
-### Task 3: Hard - Polypharmacy (8 drugs)
-- Complex elderly patient with 8 medications
-- Find all interactions, classify severity, AND recommend clinical actions
-- **Scoring**: 30% pairs + 25% severity + 25% recommendations + 10% precision + 10% completeness  critical miss penalty
-
-## Reward Function
-
-Rewards range from **0.0 to 1.0** per task with partial credit:
-
--  **Correct pair identification**: Points for each real DDI found
--  **Severity accuracy**: Full points for exact match, 50% for adjacent severity
--  **Recommendation quality** (medium/hard): Points for correct clinical action
--  **False positive penalty**: Deduction per hallucinated interaction
--  **Critical miss penalty**: Extra penalty for missing major/contraindicated interactions
-
-## Drug Knowledge Base
-
-The environment includes **30 common drugs** across therapeutic classes:
-- Cardiovascular (warfarin, aspirin, clopidogrel, lisinopril, atorvastatin, etc.)
-- CNS/Psychiatric (fluoxetine, sertraline, diazepam, tramadol, lithium, etc.)
-- Antibiotics (ciprofloxacin, metronidazole, erythromycin, rifampin, etc.)
-- Analgesics (ibuprofen, naproxen, acetaminophen)
-- Diabetes (metformin, glipizide)
-- Other (omeprazole, levothyroxine, spironolactone)
-
-With **60+ known DDI pairs** based on real clinical pharmacology.
-
-## Baseline Inference
-
-```bash
-export API_BASE_URL="https://api.openai.com/v1"
-export MODEL_NAME="gpt-4"
-export HF_TOKEN="your-api-key"
-python inference.py
-```
-
-### Expected Baseline Scores (GPT-4)
-
-| Task | Expected Score | Difficulty |
-|------|---------------|------------|
-| `easy_pair_check` | ~0.851.0 | Easy |
-| `medium_multi_drug` | ~0.550.75 | Medium |
-| `hard_polypharmacy` | ~0.350.55 | Hard |
-
-## Project Structure
-
-```
-PharmaDDIEnv/
--- inference.py              # Baseline inference script
--- openenv.yaml              # OpenEnv manifest with 3 tasks
--- pyproject.toml             # Project metadata & dependencies
--- README.md                  # This file
--- models.py                  # Action/Observation Pydantic models
--- client.py                  # PharmaDDIEnv client
--- __init__.py                # Module exports
--- server/
-    -- drug_data.py           # Drug & interaction knowledge base
-    -- PharmaDDIEnv_environment.py  # Core environment + grading logic
-    -- app.py                 # FastAPI application
-    -- Dockerfile             # Container image definition
-    -- requirements.txt       # Server dependencies
-```
-
-## Setup Instructions
-
-1. **Install dependencies**: `pip install openenv-core[core]`
-2. **Build Docker**: `docker build -t PharmaDDIEnv-env:latest -f server/Dockerfile .`
-3. **Run server**: `uvicorn server.app:app --host 0.0.0.0 --port 8000`
-4. **Validate**: `openenv validate`
-5. **Deploy**: `openenv push`
-
-## Deploying to Hugging Face Spaces
-
+### Hugging Face Space
+The environment is optimized for HF Spaces. Simply run:
 ```bash
 openenv push
-# or with options:
-openenv push --repo-id your-username/PharmaDDIEnv --private
 ```
 
-The deployed space includes:
-- **Web Interface** at `/web`
-- **API Documentation** at `/docs`
-- **Health Check** at `/health`
-- **WebSocket** at `/ws`
+---
+
+## 📂 Project Structure
+| File | Description |
+| :--- | :--- |
+| `server/PharmaDDIEnv_environment.py` | Core RL environment and grading engine. |
+| `server/drug_data.py` | Knowledge base of 30+ drugs and 60+ DDI pairs. |
+| `models.py` | Pydantic schemas for Actions and Observations. |
+| `inference.py` | Baseline inference script with Hackathon-compliant logging. |
+| `openenv.yaml` | Environment manifest for the OpenEnv framework. |
+
+---
+
+## 📜 License & Acknowledgements
+Built for the **Meta x HuggingFace OpenEnv Hackathon**.
+Knowledge base curated from publicly available clinical guidelines and drug interaction databases.
+
+*Disclaimer: This environment is for research and benchmarking purposes only. It is not a substitute for clinical judgment.*
