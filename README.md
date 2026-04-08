@@ -3,7 +3,7 @@
 
 ---
 
-## 🩺 Motivation & Real-World Utility
+##  Motivation & Real-World Utility
 **Drug-Drug Interactions (DDIs)** are a leading cause of preventable medical errors, hospitalizations, and mortality worldwide. As patients age and develop multiple chronic conditions, the complexity of their medication regimens (polypharmacy) increases exponentially. 
 
 In a typical clinical workflow, a pharmacist must:
@@ -15,7 +15,7 @@ In a typical clinical workflow, a pharmacist must:
 
 ---
 
-## 🎮 Environment Overview
+##  Environment Overview
 The **PharmaDDI** environment presents the agent with a patient "Patient Profile" containing:
 - **Demographics**: Age and medical conditions.
 - **Medication List**: Generic names, therapeutic classes, doses, and frequencies.
@@ -24,7 +24,7 @@ The agent's goal is to detect and report all clinically significant interactions
 
 ---
 
-## 🛠 Action & Observation Spaces
+##  Action & Observation Spaces
 
 ### Observation Space
 The agent receives a `PharmaDDIObservation` object containing the clinical context:
@@ -62,7 +62,7 @@ class PharmaDDIAction(Action):
 
 ---
 
-## 📈 Tasks & Grader Logic
+##  Tasks & Grader Logic
 PharmaDDI features three tasks of increasing clinical complexity:
 
 | Task ID | Medications | Objective | Grader Difficulty |
@@ -73,7 +73,7 @@ PharmaDDI features three tasks of increasing clinical complexity:
 
 ---
 
-## ⚖️ Reward Function
+##  Reward Function
 The environment implements a **weighted partial-credit system** (0.0 - 1.0) to encourage precise clinical reasoning:
 
 - **Identification (30-60%)**: Points for finding the correct interacting drug pairs.
@@ -85,18 +85,8 @@ The environment implements a **weighted partial-credit system** (0.0 - 1.0) to e
 
 ---
 
-## 📊 Baseline Results
-*Model: Qwen/Qwen2.5-72B-Instruct*
 
-- **Easy Code (1 interaction)**: `0.800` ✅
-- **Medium Code (3+ interactions)**: `0.515` ⚠️
-- **Hard Code (7+ interactions)**: `0.000` ❌
-
-The Hard task presents a significant challenge for current instruction-tuned models due to the exhaustive pairwise checking required in polypharmacy scenarios.
-
----
-
-## 🚀 Setup & Usage
+##  Setup & Usage
 
 ### Local Development
 1. **Clone & Install**:
@@ -126,7 +116,7 @@ openenv push
 
 ---
 
-## 📂 Project Structure
+## Project Structure
 | File | Description |
 | :--- | :--- |
 | `server/PharmaDDIEnv_environment.py` | Core RL environment and grading engine. |
@@ -137,7 +127,7 @@ openenv push
 
 ---
 
-## 📜 License & Acknowledgements
+##  License & Acknowledgements
 Built for the **Meta x HuggingFace OpenEnv Hackathon**.
 Knowledge base curated from publicly available clinical guidelines and drug interaction databases.
 
