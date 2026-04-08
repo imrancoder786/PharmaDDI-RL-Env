@@ -1,0 +1,19 @@
+spec_version: 1
+name: PharmaDDIEnv
+type: space
+runtime: fastapi
+app: server.app:app
+port: 8000
+
+tasks:
+  - name: easy_pair_check
+    description: "Given 2 medications, identify if a drug interaction exists and classify its severity."
+    difficulty: easy
+
+  - name: medium_multi_drug
+    description: "Given 5 medications, find ALL interacting drug pairs and classify each severity level."
+    difficulty: medium
+
+  - name: hard_polypharmacy
+    description: "Given 8 medications (polypharmacy), find all interactions, classify severity, and recommend clinical actions."
+    difficulty: hard
