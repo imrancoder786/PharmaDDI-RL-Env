@@ -21,9 +21,9 @@ MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 ENV_BASE_URL = os.getenv("ENV_BASE_URL") or "http://localhost:8000"
 
 BENCHMARK = "PharmaDDIEnv"
-MAX_STEPS = 1
+MAX_STEPS = 15
 TEMPERATURE = 0.1
-MAX_TOKENS = 500
+MAX_TOKENS = 1000
 
 SYSTEM_PROMPT = textwrap.dedent("""
     You are an expert clinical pharmacist AI assistant.

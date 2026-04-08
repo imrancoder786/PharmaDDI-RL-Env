@@ -1,40 +1,53 @@
+---
+title: PharmaDDIEnv
+emoji: 💊
+colorFrom: blue
+colorTo: purple
+sdk: docker
+app_port: 8000
+---
+
 # PharmaDDI: Clinical Drug-Drug Interaction RL Environment
-### *Empowering AI Agents to Prevent Adverse Drug Events in Complex Polypharmacy*
+
+### Empowering AI Agents to Prevent Adverse Drug Events in Complex Polypharmacy
 
 ---
 
-##  Motivation & Real-World Utility
-**Drug-Drug Interactions (DDIs)** are a leading cause of preventable medical errors, hospitalizations, and mortality worldwide. As patients age and develop multiple chronic conditions, the complexity of their medication regimens (polypharmacy) increases exponentially. 
+## Motivation & Real-World Utility
+
+Drug-Drug Interactions (DDIs) are a major cause of preventable medical errors, hospitalizations, and mortality worldwide. As patients age and develop multiple chronic conditions, the complexity of their medication regimens (polypharmacy) increases significantly.
 
 In a typical clinical workflow, a pharmacist must:
-1. Identify all interacting pairs within a list of 5-10+ drugs.
-2. Assess the clinical significance (Severity).
-3. Determine the best course of action (Recommendation) to mitigate risk while maintaining therapeutic efficacy.
 
-**PharmaDDI** provides a robust, clinically-grounded RL environment to benchmark AI agents on these life-critical decision-making tasks.
+1. Identify all interacting drug pairs within a list of medications
+2. Assess the clinical severity of each interaction
+3. Recommend appropriate actions to reduce patient risk while maintaining treatment effectiveness
 
----
-
-##  Environment Overview
-The **PharmaDDI** environment presents the agent with a patient "Patient Profile" containing:
-- **Demographics**: Age and medical conditions.
-- **Medication List**: Generic names, therapeutic classes, doses, and frequencies.
-
-The agent's goal is to detect and report all clinically significant interactions within the list, simulating the expertise of a board-certified clinical pharmacist.
+PharmaDDI provides a clinically grounded reinforcement learning (RL) environment to benchmark AI agents on these critical healthcare decision-making tasks.
 
 ---
 
-##  Action & Observation Spaces
+## Environment Overview
 
-### Observation Space
-The agent receives a `PharmaDDIObservation` object containing the clinical context:
+The PharmaDDI environment provides an agent with a structured patient profile that includes:
+
+* Demographics (age and medical conditions)
+* Medication list (drug name, class, dosage, and frequency)
+
+The goal of the agent is to detect and report all clinically significant drug-drug interactions, simulating the reasoning process of a clinical pharmacist.
+
+---
+
+## Observation Space
+
+The agent receives a structured observation object:
 
 ```python
 class MedicationInfo(BaseModel):
-    name: str # e.g., "warfarin"
-    therapeutic_class: str # e.g., "anticoagulant"
-    common_dose: str # e.g., "5mg"
-    frequency: str # e.g., "once daily"
+    name: str
+    therapeutic_class: str
+    common_dose: str
+    frequency: str
 
 class PharmaDDIObservation(Observation):
     patient_id: str
@@ -45,16 +58,19 @@ class PharmaDDIObservation(Observation):
     instructions: str
 ```
 
-### Action Space
-The agent responds with a `PharmaDDIAction` containing a list of interaction reports:
+---
+
+## Action Space
+
+The agent returns detected interactions in the following format:
 
 ```python
 class InteractionReport(BaseModel):
     drug_a: str
     drug_b: str
-    severity: str # minor | moderate | major | contraindicated
-    clinical_effect: str # Clinical consequence
-    recommendation: str # monitor | adjust_dose | substitute | discontinue
+    severity: str  # minor | moderate | major | contraindicated
+    clinical_effect: str
+    recommendation: str  # monitor | adjust_dose | substitute | discontinue
 
 class PharmaDDIAction(Action):
     interactions_found: List[InteractionReport]
@@ -62,54 +78,65 @@ class PharmaDDIAction(Action):
 
 ---
 
-##  Tasks & Grader Logic
-PharmaDDI features three tasks of increasing clinical complexity:
+## Tasks & Evaluation
 
-| Task ID | Medications | Objective | Grader Difficulty |
-| :--- | :--- | :--- | :--- |
-| **`easy_pair_check`** | 2 | Determine if a specific pair interacts. | Focused on binary detection and severity classification. |
-| **`medium_multi_drug`** | 5 | Find ALL interaction pairs in the list. | Requires pairwise exhaustive checking (10 possible pairs). |
-| **`hard_polypharmacy`** | 8 | Manage complex elderly patient regimens. | High penalty for missing critical interactions (Major/Contraindicated). |
+The environment includes three levels of difficulty:
 
----
-
-##  Reward Function
-The environment implements a **weighted partial-credit system** (0.0 - 1.0) to encourage precise clinical reasoning:
-
-- **Identification (30-60%)**: Points for finding the correct interacting drug pairs.
-- **Severity Classification (25-40%)**: Points for matching the ground-truth severity.
-- **Recommendations (10-25%)**: Points for suggesting the correct clinical intervention.
-- **Penalties**: 
-    - **False Positives**: Deductions for flagging interactions that do not exist (prevents "alert fatigue").
-    - **Critical Misses**: Large penalties for failing to identify *Major* or *Contraindicated* interactions.
+| Task ID           | Medications | Objective                           | Difficulty |
+| ----------------- | ----------- | ----------------------------------- | ---------- |
+| easy_pair_check   | 2           | Detect interaction for a given pair | Easy       |
+| medium_multi_drug | 5           | Identify all interacting pairs      | Medium     |
+| hard_polypharmacy | 8           | Handle complex multi-drug cases     | Hard       |
 
 ---
 
+## Reward Function
 
-##  Setup & Usage
+A weighted scoring system (0.0 to 1.0) evaluates agent performance:
+
+* Identification Accuracy (30–60%)
+* Severity Classification (25–40%)
+* Recommendation Quality (10–25%)
+
+Penalties include:
+
+* False positives (incorrect interaction detection)
+* Missing critical interactions (major or contraindicated)
+
+---
+
+## Example Workflow
+
+1. Input: Patient with multiple medications
+2. Agent analyzes all possible drug pairs
+3. Outputs structured interaction reports
+4. Environment scores the response based on correctness
+
+---
+
+## Setup & Usage
 
 ### Local Development
-1. **Clone & Install**:
-   ```bash
-   pip install -e .
-   ```
-2. **Run Server**:
-   ```bash
-   uvicorn server.app:app --host 0.0.0.0 --port 8000
-   ```
-3. **Verify with Validator**:
-   ```bash
-   python vall.py
-   ```
+
+```bash
+pip install -e .
+uvicorn server.app:app --host 0.0.0.0 --port 8000
+python vall.py
+```
+
+---
 
 ### Docker Deployment
+
 ```bash
 docker build -t pharmaddi-env:latest -f Dockerfile .
 docker run -p 8000:8000 pharmaddi-env:latest
 ```
 
-### Hugging Face Space
-The environment is optimized for HF Spaces. Simply run:
+---
+
+### Hugging Face Deployment
+
 ```bash
 openenv push
 ```
@@ -117,18 +144,21 @@ openenv push
 ---
 
 ## Project Structure
-| File | Description |
-| :--- | :--- |
-| `server/PharmaDDIEnv_environment.py` | Core RL environment and grading engine. |
-| `server/drug_data.py` | Knowledge base of 30+ drugs and 60+ DDI pairs. |
-| `models.py` | Pydantic schemas for Actions and Observations. |
-| `inference.py` | Baseline inference script with Hackathon-compliant logging. |
-| `openenv.yaml` | Environment manifest for the OpenEnv framework. |
+
+| File                               | Description                               |
+| ---------------------------------- | ----------------------------------------- |
+| server/PharmaDDIEnv_environment.py | Core RL environment and grading logic     |
+| server/drug_data.py                | Drug database and interaction rules       |
+| models.py                          | Data schemas for observations and actions |
+| inference.py                       | Baseline agent implementation             |
+| openenv.yaml                       | OpenEnv configuration                     |
 
 ---
 
-##  License & Acknowledgements
-Built for the **Meta x HuggingFace OpenEnv Hackathon**.
-Knowledge base curated from publicly available clinical guidelines and drug interaction databases.
+## License & Acknowledgements
 
-*Disclaimer: This environment is for research and benchmarking purposes only. It is not a substitute for clinical judgment.*
+This project was developed for the Meta x Hugging Face OpenEnv Hackathon.
+
+The drug interaction knowledge base is derived from publicly available clinical sources and research literature.
+
+Disclaimer: This project is intended for research and educational purposes only. It should not be used for real clinical decision-making.

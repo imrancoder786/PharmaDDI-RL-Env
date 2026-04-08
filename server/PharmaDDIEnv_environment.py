@@ -284,7 +284,7 @@ class PharmaDDIEnvironment(Environment):
                 critical_penalty
             )
 
-        final_score = min(max(raw_score, 0.0), 1.0)
+        final_score = min(max(raw_score, 0.01), 0.99)
 
         # Build summary feedback
         summary = (
