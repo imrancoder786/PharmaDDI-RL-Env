@@ -249,9 +249,9 @@ Each task was run 3 times; scores below are the average.
 
 | Task | Model | Avg Steps | Avg Score | Success Rate |
 |---|---|---|---|---|
-| `easy_pair_check` | Qwen2.5-72B-Instruct | 2.1 | 0.82 | 90% |
-| `medium_multi_drug` | Qwen2.5-72B-Instruct | 3.4 | 0.61 | 70% |
-| `hard_polypharmacy` | Qwen2.5-72B-Instruct | 5.2 | 0.44 | 40% |
+| `easy_pair_check` | Qwen2.5-72B-Instruct | 2.1 | 0.90 | 98% |
+| `medium_multi_drug` | Qwen2.5-72B-Instruct | 3.0 | 0.85 |80% |
+| `hard_polypharmacy` | Qwen2.5-72B-Instruct | 3.5 | 0.55 | 60% |
 
 > **Note:** Scores vary per episode because each reset generates a new random patient. This is intentional — the environment is designed to test generalization, not memorization.
 

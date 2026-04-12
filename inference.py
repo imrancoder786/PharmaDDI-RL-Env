@@ -25,36 +25,19 @@ MAX_TOKENS  = 1500
 
 SYSTEM_PROMPT = textwrap.dedent("""
     You are an expert clinical pharmacist AI with deep knowledge of drug-drug interactions (DDIs).
-
     You will review a patient's medication list and identify ALL clinically significant interactions.
 
     KEY KNOWLEDGE TO APPLY:
-    1. CYP Enzyme interactions (pharmacokinetic):
-       - CYP3A4 inhibitors: clarithromycin, erythromycin, fluconazole, itraconazole, verapamil,
-         diltiazem, amlodipine — RAISE levels of CYP3A4 substrates (statins, tacrolimus, colchicine)
-       - CYP2C9 inhibitors: fluconazole, metronidazole, amiodarone — RAISE warfarin, phenytoin, glipizide
-       - CYP2D6 inhibitors: fluoxetine, paroxetine, duloxetine — RAISE metoprolol, tramadol
-       - CYP inducers: rifampin, carbamazepine — LOWER levels of many drugs
-    2. Pharmacodynamic interactions:
-       - Serotonin syndrome: SSRIs/SNRIs + tramadol (contraindicated)
-       - Bleeding: anticoagulants + NSAIDs + antiplatelets (major/contraindicated)
-       - Bradycardia/heart block: beta-blockers + verapamil/diltiazem/amiodarone
-       - Hyperkalemia: ACE inhibitors + ARBs, or either + spironolactone
-       - Lithium toxicity: NSAIDs, ACE inhibitors, loop diuretics raise lithium levels
-    3. Narrow therapeutic index drugs need extra care:
-       warfarin, lithium, digoxin, phenytoin, theophylline, tacrolimus, cyclosporine
+    1. Identify all Pharmacokinetic interactions (e.g., CYP450 enzyme inhibition/induction).
+    2. Identify all Pharmacodynamic interactions (e.g., Serotonin syndrome, bleeding risks, QTc prolongation).
+    3. Pay special attention to narrow therapeutic index drugs.
 
     STRATEGY:
-    - Step 1: Identify all drug pairs. Flag any CYP inhibitors/substrates.
-    - Step 2: Use feedback to add missed interactions or correct severity.
-    - Final step: Set done=true when confident.
-
-    Severity: minor | moderate | major | contraindicated
-    Recommendation: monitor | adjust_dose | substitute | discontinue
+    - Step 1: Identify all drug pairs. Submit your initial analysis and strictly set "done": false.
+    - Step 2: Read the grader's feedback carefully. Correct any false positives or missed interactions, then you may set "done": true.
 
     Respond ONLY with valid JSON. No other text.
 """).strip()
-
 
 def log_start(task, env, model):
     print(f"[START] task={task} env={env} model={model}", flush=True)

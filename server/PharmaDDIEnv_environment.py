@@ -288,15 +288,21 @@ class PharmaDDIEnvironment(Environment):
             pair_score = correct_pairs / total_gt
             sev_score = correct_severity / total_gt
             rec_score = correct_recommendation / total_gt
-            fp_penalty = false_positives * 0.08
+            
+            # INCREASE false positive penalty slightly to punish guessing
+            fp_penalty = false_positives * 0.10 
             completeness = 1.0 - (len(missed) / total_gt)
             critical_missed = sum(1 for m in missed if m.severity in ("major", "contraindicated"))
-            critical_penalty = min(critical_missed * 0.12, 0.30)  # CAPPED
+            
+            # UNCAPPED or severely raised penalty for missing lethal interactions
+            critical_penalty = critical_missed * 0.25  # Lose 25% of score per missed critical!
+            
             no_fp_bonus = 1.0 if false_positives == 0 else max(0, 1.0 - fp_penalty)
             raw_score = (
                 0.30 * pair_score + 0.25 * sev_score + 0.25 * rec_score
                 + 0.10 * no_fp_bonus + 0.10 * completeness - critical_penalty
             )
+            
 
         final_score = min(max(raw_score, 0.0), 1.0)
 
