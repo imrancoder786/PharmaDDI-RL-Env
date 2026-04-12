@@ -5,15 +5,122 @@ runtime: fastapi
 app: server.app:app
 port: 8000
 
+description: >
+  A clinical drug-drug interaction (DDI) reinforcement learning environment.
+  An AI agent reviews patient medication lists and must identify dangerous
+  drug-drug interactions, classify their severity, and recommend clinical
+  management actions — simulating the reasoning process of a clinical pharmacist.
+  Features adaptive curriculum learning that tracks agent weaknesses per drug
+  class and generates targeted scenarios to address them.
+
+tags:
+  - healthcare
+  - clinical-ai
+  - drug-interactions
+  - reinforcement-learning
+  - curriculum-learning
+  - pharmacology
+
 tasks:
   - name: easy_pair_check
-    description: "Given 2 medications, identify if a drug interaction exists and classify its severity."
+    description: >
+      Given a patient prescribed exactly 2 medications, identify whether a
+      drug-drug interaction exists between them, classify its severity
+      (minor/moderate/major/contraindicated), and recommend a clinical action
+      (monitor/adjust_dose/substitute/discontinue).
     difficulty: easy
+    min_score: 0.0
+    max_score: 1.0
+    max_steps: 10
+    success_threshold: 0.5
 
   - name: medium_multi_drug
-    description: "Given 5 medications, find ALL interacting drug pairs and classify each severity level."
+    description: >
+      Given a patient prescribed 5 medications, identify ALL drug-drug
+      interaction pairs among them, classify each interaction's severity, and
+      recommend appropriate clinical actions. The total number of interactions
+      is not disclosed — the agent must be thorough. Tests CYP enzyme
+      interaction reasoning and polypharmacy management.
     difficulty: medium
+    min_score: 0.0
+    max_score: 1.0
+    max_steps: 10
+    success_threshold: 0.5
 
   - name: hard_polypharmacy
-    description: "Given 8 medications (polypharmacy), find all interactions, classify severity, and recommend clinical actions."
+    description: >
+      Given a complex elderly patient prescribed 8 medications, identify ALL
+      drug-drug interactions, classify each by severity, and provide specific
+      clinical recommendations for each. Tests deep pharmacokinetic reasoning
+      (CYP3A4, CYP2C9, CYP2D6 pathways), pharmacodynamic interactions
+      (serotonin syndrome, bleeding risk, bradycardia), and management of
+      narrow therapeutic index drugs. Minimum 4 interactions guaranteed.
     difficulty: hard
+    min_score: 0.0
+    max_score: 1.0
+    max_steps: 10
+    success_threshold: 0.5
+
+reward:
+  type: delta
+  description: >
+    Step reward = improvement over best score so far (delta reward shaping).
+    Scores reflect partial credit: correct drug pair but wrong severity = partial
+    credit; close severity (off by 1 level) = 0.5 credit; graduated
+    recommendation credit. False positives and missed critical interactions
+    (major/contraindicated) are penalized, with all penalties capped to
+    prevent score collapse on difficult cases.
+
+curriculum:
+  enabled: true
+  description: >
+    Adaptive curriculum engine tracks agent performance per drug interaction
+    category (CYP3A4, CYP2C9, CYP2D6, serotonin_syndrome, bleeding_risk,
+    narrow_index_drugs, renal_toxicity) and generates scenarios weighted
+    toward the agent's weakest areas. 20% exploration rate ensures
+    generalization is maintained across all drug classes.
+  categories:
+    - cyp3a4_interactions
+    - cyp2c9_interactions
+    - cyp2d6_interactions
+    - serotonin_syndrome
+    - bleeding_risk
+    - narrow_index_drugs
+    - renal_toxicity
+
+database:
+  drugs: 60
+  interactions: 120
+  sources:
+    - DrugBank (interaction types and CYP pathway data)
+    - Clinical pharmacology literature
+    - DDI-Bench benchmark (Shen et al., Bioinformatics 2025)
+
+observation_space:
+  type: structured_json
+  fields:
+    - task_name: string
+    - task_difficulty: string
+    - patient_id: string
+    - patient_age: integer
+    - patient_conditions: list[string]
+    - medications: list[MedicationInfo]
+    - num_medications: integer
+    - instructions: string
+    - feedback: string
+    - score: float [0.0, 1.0]
+    - total_interactions: integer  # -1 = not disclosed (medium/hard tasks)
+    - actions_remaining: integer
+    - metadata: object  # includes curriculum_focus and curriculum_status
+
+action_space:
+  type: structured_json
+  fields:
+    - interactions_found: list[InteractionReport]
+    - done: boolean
+  interaction_report_fields:
+    - drug_a: string  # lowercase generic drug name
+    - drug_b: string  # lowercase generic drug name
+    - severity: enum [minor, moderate, major, contraindicated]
+    - clinical_effect: string
+    - recommendation: enum [monitor, adjust_dose, substitute, discontinue]

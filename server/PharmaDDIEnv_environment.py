@@ -1,23 +1,8 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree.
-
 """
-PharmaDDI Environment Implementation.
-
-A clinical pharmacist drug-drug interaction (DDI) checking environment.
-The agent receives patient medication lists and must identify interactions,
-classify their severity, and recommend clinical actions.
-
-Three tasks with increasing difficulty:
-  - easy_pair_check:    2 drugs - identify if interaction exists + severity
-  - medium_multi_drug:  5 drugs - find ALL interacting pairs + severity
-  - hard_polypharmacy:  8 drugs - interactions + severity + recommendations
+PharmaDDI Environment — with Adaptive Curriculum Learning and DDI-Bench inspired data.
 """
 
-import json
+import random as _random
 from uuid import uuid4
 from typing import Optional, Dict, Any
 
@@ -31,65 +16,57 @@ except ImportError:
 
 try:
     from .drug_data import (
-        TASK_DEFINITIONS,
-        PatientScenario,
-        drug_to_dict,
-        interaction_to_dict,
-        lookup_interaction,
-        SEVERITY_ORDER,
+        TASK_DEFINITIONS, PatientScenario, drug_to_dict,
+        interaction_to_dict, lookup_interaction, SEVERITY_ORDER, DRUGS,
     )
+    from .curriculum import CurriculumEngine
 except ImportError:
     from drug_data import (
-        TASK_DEFINITIONS,
-        PatientScenario,
-        drug_to_dict,
-        interaction_to_dict,
-        lookup_interaction,
-        SEVERITY_ORDER,
+        TASK_DEFINITIONS, PatientScenario, drug_to_dict,
+        interaction_to_dict, lookup_interaction, SEVERITY_ORDER, DRUGS,
     )
+    from curriculum import CurriculumEngine
 
-
-# ---------------------------------------------------------------------------
-# Instructions templates
-# ---------------------------------------------------------------------------
 
 INSTRUCTIONS = {
     "easy_pair_check": (
         "You are a clinical pharmacist. A patient is prescribed the following 2 medications. "
         "Determine if there is a drug-drug interaction between them.\n\n"
         "Respond with a JSON object containing an 'interactions_found' array. "
-        "Each interaction should have: drug_a, drug_b, severity (minor/moderate/major/contraindicated), "
-        "clinical_effect (brief description), recommendation (monitor/adjust_dose/substitute/discontinue).\n\n"
-        "If no interaction exists, return an empty interactions_found array."
+        "Each interaction: drug_a, drug_b, severity (minor/moderate/major/contraindicated), "
+        "clinical_effect, recommendation (monitor/adjust_dose/substitute/discontinue).\n"
+        "If no interaction, return empty interactions_found."
     ),
     "medium_multi_drug": (
-        "You are a clinical pharmacist reviewing a patient's medication list of 5 drugs. "
-        "Identify ALL drug-drug interactions among these medications.\n\n"
-        "Respond with a JSON object containing an 'interactions_found' array. "
-        "For each interaction: drug_a, drug_b (lowercase), severity (minor/moderate/major/contraindicated), "
-        "clinical_effect (brief description), recommendation (monitor/adjust_dose/substitute/discontinue).\n\n"
-        "Be thorough - check all possible pairs."
+        "You are a clinical pharmacist reviewing 5 medications. "
+        "Identify ALL drug-drug interactions. Note: total count is not disclosed — be thorough.\n\n"
+        "For each interaction: drug_a, drug_b (lowercase), severity, clinical_effect, recommendation.\n"
+        "Check all possible pairs."
     ),
     "hard_polypharmacy": (
         "You are a clinical pharmacist reviewing a complex polypharmacy case with 8 medications. "
         "This elderly patient requires careful medication review.\n\n"
-        "Identify ALL drug-drug interactions. For each interaction provide:\n"
+        "Identify ALL drug-drug interactions:\n"
         "- drug_a and drug_b (lowercase generic names)\n"
         "- severity: minor | moderate | major | contraindicated\n"
-        "- clinical_effect: explain the mechanism and clinical consequence\n"
+        "- clinical_effect: mechanism and clinical consequence\n"
         "- recommendation: monitor | adjust_dose | substitute | discontinue\n\n"
-        "Respond with a JSON object containing an 'interactions_found' array.\n"
-        "Accuracy of severity classification AND recommendation is critical."
+        "Note: total interactions NOT disclosed. Accuracy of severity AND recommendation is critical.\n"
+        "Hint: check CYP enzyme interactions carefully — many interactions are pharmacokinetic."
     ),
 }
 
 
 class PharmaDDIEnvironment(Environment):
     """
-    Pharmaceutical Drug-Drug Interaction checking environment.
+    PharmaDDI RL Environment with Adaptive Curriculum Learning.
 
-    The agent reviews patient medication lists and identifies dangerous
-    drug interactions, simulating a real clinical pharmacist workflow.
+    New in this version:
+    - 60+ drugs, 120+ interactions (DDI-Bench inspired coverage)
+    - CurriculumEngine tracks agent weaknesses per drug class
+    - Scenarios are generated to target the agent's weakest areas
+    - Mechanism-aware hints in instructions (CYP pathways)
+    - Random seed per episode (never same patient twice)
     """
 
     SUPPORTS_CONCURRENT_SESSIONS: bool = False
@@ -100,53 +77,71 @@ class PharmaDDIEnvironment(Environment):
         self._current_task: str = "easy_pair_check"
         self._done: bool = False
         self._last_score: float = 0.0
-        self._episode_seed: int = 42
-        # added for every step moniter
-        self._best_score = 0.0
+        self._best_score: float = 0.0
         self._best_submission = None
-        self._max_steps = 10
+        self._max_steps: int = 10
+        self._current_focus: str = "general"
+
+        # Adaptive curriculum engine — persists across episodes
+        self._curriculum = CurriculumEngine()
+        self._rng = _random.Random()
 
     def reset(self, task_name: str = None, seed: int = None) -> PharmaDDIObservation:
-        """Reset the environment with a new patient scenario."""
-        ########
+        """
+        Reset environment. Each call generates a fresh random patient.
+        Curriculum engine selects which drug class to focus on based on
+        the agent's previous performance weaknesses.
+        """
+        # Record previous episode result in curriculum before resetting
+        if self._scenario is not None and self._best_score > 0:
+            self._curriculum.record_episode(
+                curriculum_focus=self._current_focus,
+                score=self._best_score,
+                task_name=self._current_task,
+            )
+
+        # Reset episode state
         self._best_score = 0.0
         self._best_submission = None
-        self._state.step_count = 0
-        self._done = False
-        ##########
         self._state = State(episode_id=str(uuid4()), step_count=0)
         self._done = False
         self._last_score = 0.0
 
         if task_name and task_name in TASK_DEFINITIONS:
             self._current_task = task_name
-        # Default to easy_pair_check if not specified
 
-        if seed is not None:
-            self._episode_seed = seed
+        # Always use a fresh random seed unless caller specifies one
+        episode_seed = seed if seed is not None else _random.randint(0, 999999)
 
-        # Generate scenario
+        # Ask curriculum which drug class to focus on
+        self._current_focus = self._curriculum.select_focus(self._rng)
+
+        # Generate scenario with curriculum focus
         generator = TASK_DEFINITIONS[self._current_task]["generator"]
-        self._scenario = generator(self._episode_seed)
+        self._scenario = generator(seed=episode_seed, curriculum_focus=self._current_focus)
+
+        curriculum_hint = (
+            f"[Curriculum focus: {self._current_focus.replace('_', ' ')}]"
+            if self._current_focus != "general" else ""
+        )
 
         return self._build_observation(
-            feedback="Environment reset. Review the patient's medications and identify drug interactions.",
+            feedback=(
+                f"Environment reset. Review the patient's medications and identify drug interactions. "
+                f"{curriculum_hint}"
+            ),
             score=0.0,
         )
 
     def step(self, action: PharmaDDIAction) -> PharmaDDIObservation:
         """
-        Grade the agent's drug interaction analysis.
-        Supports multi-step episodes: agent can improve answer over multiple attempts.
-        Reward = improvement over previous best score (delta).
-        Episode ends when agent sets action.done = True or max steps reached.
+        Grade the agent's submission. Supports multi-step refinement.
+        Reward = improvement over best score so far (delta reward shaping).
         """
         if self._done:
             return self._build_observation(
-                feedback="Episode already complete. Call reset() to start a new episode.",
-                score=self._best_score,
-                done=True,
-                reward=0.0,
+                feedback="Episode complete. Call reset() to start a new episode.",
+                score=self._best_score, done=True, reward=0.0,
             )
 
         self._state.step_count += 1
@@ -154,34 +149,34 @@ class PharmaDDIEnvironment(Environment):
         if self._scenario is None:
             return self._build_observation(
                 feedback="No scenario loaded. Call reset() first.",
-                score=0.0,
-                done=True,
-                reward=0.0,
+                score=0.0, done=True, reward=0.0,
             )
 
-        # Grade the submission
         raw_score, feedback = self._grade_submission(action)
 
-        # Clamp raw_score to avoid exact 0.0 or 1.0 (validation requirement)
-        clamped_score = min(max(raw_score, 0.01), 0.99)
+        # Allow full 0.0 and 1.0 — no artificial clamping
+        final_score = min(max(raw_score, 0.0), 1.0)
 
-        # Reward = improvement over best score so far
-        improvement = max(0.0, clamped_score - self._best_score)
-        if clamped_score > self._best_score:
-            self._best_score = clamped_score
+        # Delta reward: only reward genuine improvement
+        improvement = max(0.0, final_score - self._best_score)
+        if final_score > self._best_score:
+            self._best_score = final_score
             self._best_submission = action
 
-        # Episode ends if agent says done OR max steps reached
-        max_steps = 10  # can be made configurable
-        done = action.done or (self._state.step_count >= max_steps)
-
+        done = action.done or (self._state.step_count >= self._max_steps)
         if done:
             self._done = True
+            # Record final score in curriculum
+            self._curriculum.record_episode(
+                curriculum_focus=self._current_focus,
+                score=self._best_score,
+                task_name=self._current_task,
+            )
 
         return self._build_observation(
             feedback=feedback,
-            score=self._best_score,          # cumulative best score
-            reward=improvement,              # step‑wise reward (delta)
+            score=self._best_score,
+            reward=improvement,
             done=done,
         )
 
@@ -189,17 +184,19 @@ class PharmaDDIEnvironment(Environment):
     def state(self) -> State:
         return self._state
 
+    def get_curriculum_status(self) -> Dict:
+        """Expose curriculum state — useful for monitoring agent learning."""
+        return self._curriculum.get_status()
+
     # ------------------------------------------------------------------
-    # Grading logic
+    # Grading Logic (improved partial credit + capped penalties)
     # ------------------------------------------------------------------
 
     def _grade_submission(self, action: PharmaDDIAction) -> tuple:
-        """Grade the agent's interaction analysis against ground truth."""
         scenario = self._scenario
         ground_truth = scenario.ground_truth_interactions
         submitted = action.interactions_found
 
-        # Build ground truth lookup
         gt_map: Dict[frozenset, Any] = {}
         for ix in ground_truth:
             key = frozenset({ix.drug_a.lower(), ix.drug_b.lower()})
@@ -207,20 +204,19 @@ class PharmaDDIEnvironment(Environment):
 
         total_gt = len(ground_truth)
         if total_gt == 0:
-            # No interactions scenario
             if len(submitted) == 0:
                 return 1.0, "Perfect! Correctly identified no interactions."
-            else:
-                penalty = min(len(submitted) * 0.2, 1.0)
-                return max(0.0, 1.0 - penalty), f"False positives: {len(submitted)} interactions reported but none exist."
+            penalty = min(len(submitted) * 0.2, 1.0)
+            return max(0.0, 1.0 - penalty), f"False positives: {len(submitted)} reported but none exist."
 
-        # Scoring components
         correct_pairs = 0
         correct_severity = 0
         correct_recommendation = 0
         false_positives = 0
         matched_keys = set()
         feedback_lines = []
+
+        rec_order = {"monitor": 1, "adjust_dose": 2, "substitute": 3, "discontinue": 4}
 
         for sub in submitted:
             key = frozenset({sub.drug_a.lower(), sub.drug_b.lower()})
@@ -229,145 +225,119 @@ class PharmaDDIEnvironment(Environment):
                 gt_ix = gt_map[key]
                 correct_pairs += 1
 
-                # Severity scoring
-                if sub.severity.lower().strip() == gt_ix.severity.lower():
-                    correct_severity += 1
-                    feedback_lines.append(
-                        f"  [OK] {sub.drug_a}{sub.drug_b}: correct pair & severity ({gt_ix.severity})"
-                    )
+                # Severity scoring with partial credit
+                sub_sev = sub.severity.lower().strip()
+                gt_sev = gt_ix.severity.lower()
+                if sub_sev == gt_sev:
+                    correct_severity += 1.0
+                    feedback_lines.append(f"  ✓ {sub.drug_a}+{sub.drug_b}: correct pair & severity ({gt_sev})")
                 else:
-                    # Partial credit for close severity
-                    sub_order = SEVERITY_ORDER.get(sub.severity.lower().strip(), 0)
-                    gt_order = SEVERITY_ORDER.get(gt_ix.severity.lower(), 0)
-                    if abs(sub_order - gt_order) == 1:
+                    sub_ord = SEVERITY_ORDER.get(sub_sev, 0)
+                    gt_ord = SEVERITY_ORDER.get(gt_sev, 0)
+                    dist = abs(sub_ord - gt_ord)
+                    if dist == 1:
                         correct_severity += 0.5
-                        feedback_lines.append(
-                            f"  ~ {sub.drug_a}{sub.drug_b}: correct pair, severity close "
-                            f"(said {sub.severity}, actual {gt_ix.severity})"
-                        )
+                        feedback_lines.append(f"  ~ {sub.drug_a}+{sub.drug_b}: pair correct, severity close (said {sub_sev}, actual {gt_sev})")
                     else:
-                        feedback_lines.append(
-                            f"   {sub.drug_a}{sub.drug_b}: correct pair but wrong severity "
-                            f"(said {sub.severity}, actual {gt_ix.severity})"
-                        )
+                        correct_severity += 0.1   # at least named the pair
+                        feedback_lines.append(f"  ✗ {sub.drug_a}+{sub.drug_b}: pair correct but wrong severity (said {sub_sev}, actual {gt_sev})")
 
-                # Recommendation scoring (hard task gets extra weight)
-                if sub.recommendation.lower().strip() == gt_ix.recommendation.lower():
-                    correct_recommendation += 1
-                elif sub.recommendation.lower().strip() in ("monitor", "adjust_dose", "substitute", "discontinue"):
-                    correct_recommendation += 0.25  # partial credit for valid but wrong
+                # Recommendation scoring with graduated partial credit
+                sub_rec = sub.recommendation.lower().strip()
+                gt_rec = gt_ix.recommendation.lower()
+                if sub_rec == gt_rec:
+                    correct_recommendation += 1.0
+                elif sub_rec in rec_order:
+                    distance = abs(rec_order.get(sub_rec, 0) - rec_order.get(gt_rec, 0))
+                    if distance == 1:
+                        correct_recommendation += 0.5
+                    elif distance == 2:
+                        correct_recommendation += 0.25
+                    else:
+                        correct_recommendation += 0.1
             else:
                 false_positives += 1
-                feedback_lines.append(
-                    f"   {sub.drug_a}{sub.drug_b}: FALSE POSITIVE - no known interaction"
-                )
+                feedback_lines.append(f"  ✗ {sub.drug_a}+{sub.drug_b}: FALSE POSITIVE — no known interaction")
 
-        # Missed interactions
         missed = []
         for key, gt_ix in gt_map.items():
             if key not in matched_keys:
                 missed.append(gt_ix)
-                severity_tag = " CRITICAL" if gt_ix.severity in ("major", "contraindicated") else "missed"
-                feedback_lines.append(
-                    f"   MISSED ({severity_tag}): {gt_ix.drug_a}{gt_ix.drug_b} ({gt_ix.severity})"
-                )
+                tag = "CRITICAL" if gt_ix.severity in ("major", "contraindicated") else "missed"
+                feedback_lines.append(f"  ✗ MISSED ({tag}): {gt_ix.drug_a}+{gt_ix.drug_b} ({gt_ix.severity})")
 
-        # Calculate score based on task difficulty
         task = self._current_task
 
         if task == "easy_pair_check":
-            # Easy: 60% pair identification, 40% severity
-            pair_score = correct_pairs / total_gt if total_gt > 0 else 0
-            sev_score = correct_severity / total_gt if total_gt > 0 else 0
+            pair_score = correct_pairs / total_gt
+            sev_score = correct_severity / total_gt
             fp_penalty = false_positives * 0.15
             raw_score = (0.6 * pair_score) + (0.4 * sev_score) - fp_penalty
 
         elif task == "medium_multi_drug":
-            # Medium: 40% pair identification, 35% severity, 10% recommendations, 15% no false positives
-            pair_score = correct_pairs / total_gt if total_gt > 0 else 0
-            sev_score = correct_severity / total_gt if total_gt > 0 else 0
-            rec_score = correct_recommendation / total_gt if total_gt > 0 else 0
+            pair_score = correct_pairs / total_gt
+            sev_score = correct_severity / total_gt
+            rec_score = correct_recommendation / total_gt
             fp_penalty = false_positives * 0.1
-            # Extra penalty for missed critical interactions
             critical_missed = sum(1 for m in missed if m.severity in ("major", "contraindicated"))
-            critical_penalty = critical_missed * 0.1
-            raw_score = (0.4 * pair_score) + (0.35 * sev_score) + (0.1 * rec_score) + (0.15 * (1.0 if false_positives == 0 else max(0, 1.0 - fp_penalty))) - critical_penalty
+            critical_penalty = min(critical_missed * 0.1, 0.25)   # CAPPED
+            no_fp_bonus = 1.0 if false_positives == 0 else max(0, 1.0 - fp_penalty)
+            raw_score = (0.4 * pair_score) + (0.35 * sev_score) + (0.1 * rec_score) + (0.15 * no_fp_bonus) - critical_penalty
 
         else:  # hard_polypharmacy
-            # Hard: 30% pair, 25% severity, 25% recommendations, 10% no FP, 10% completeness
-            pair_score = correct_pairs / total_gt if total_gt > 0 else 0
-            sev_score = correct_severity / total_gt if total_gt > 0 else 0
-            rec_score = correct_recommendation / total_gt if total_gt > 0 else 0
+            pair_score = correct_pairs / total_gt
+            sev_score = correct_severity / total_gt
+            rec_score = correct_recommendation / total_gt
             fp_penalty = false_positives * 0.08
-            completeness = 1.0 - (len(missed) / total_gt) if total_gt > 0 else 0
+            completeness = 1.0 - (len(missed) / total_gt)
             critical_missed = sum(1 for m in missed if m.severity in ("major", "contraindicated"))
-            critical_penalty = critical_missed * 0.12
+            critical_penalty = min(critical_missed * 0.12, 0.30)  # CAPPED
+            no_fp_bonus = 1.0 if false_positives == 0 else max(0, 1.0 - fp_penalty)
             raw_score = (
-                0.30 * pair_score +
-                0.25 * sev_score +
-                0.25 * rec_score +
-                0.10 * (1.0 if false_positives == 0 else max(0, 1.0 - fp_penalty)) +
-                0.10 * completeness -
-                critical_penalty
+                0.30 * pair_score + 0.25 * sev_score + 0.25 * rec_score
+                + 0.10 * no_fp_bonus + 0.10 * completeness - critical_penalty
             )
 
-        final_score = min(max(raw_score, 0.01), 0.99)
+        final_score = min(max(raw_score, 0.0), 1.0)
 
-        # Build summary feedback
+        # Add mechanism hint in feedback for learning
+        mechanism_hints = []
+        for gt_ix in missed:
+            if gt_ix.mechanism == "pharmacokinetic":
+                mechanism_hints.append(f"  Hint: {gt_ix.drug_a}+{gt_ix.drug_b} is a CYP enzyme interaction.")
+        if mechanism_hints:
+            feedback_lines.extend(["", "Mechanism hints:"] + mechanism_hints)
+
         summary = (
-            f"Score: {final_score:.3f}/1.000\n"
-            f"Interactions found: {correct_pairs}/{total_gt} | "
-            f"Severity correct: {correct_severity}/{total_gt} | "
-            f"Recommendations correct: {correct_recommendation}/{total_gt} | "
-            f"False positives: {false_positives} | "
-            f"Missed: {len(missed)}\n"
-            f"Details:\n" + "\n".join(feedback_lines)
+            f"Score: {final_score:.3f}/1.000 | "
+            f"Pairs: {correct_pairs}/{total_gt} | "
+            f"Severity: {correct_severity:.1f}/{total_gt} | "
+            f"Recommendations: {correct_recommendation:.1f}/{total_gt} | "
+            f"FP: {false_positives} | Missed: {len(missed)}\n"
+            + "\n".join(feedback_lines)
         )
 
         return final_score, summary
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _build_observation(
-        self,
-        feedback: str = "",
-        score: float = 0.0,
-        reward: float = 0.0,
-        done: bool = False,
-    ) -> PharmaDDIObservation:
-        """Build an observation from the current scenario."""
+    def _build_observation(self, feedback="", score=0.0, reward=0.0, done=False) -> PharmaDDIObservation:
         scenario = self._scenario
-
         if scenario is None:
             return PharmaDDIObservation(
-                task_name="",
-                task_difficulty="",
-                patient_id="",
-                patient_age=0,
-                patient_conditions=[],
-                medications=[],
-                num_medications=0,
-                instructions="Call reset() to start.",
-                feedback=feedback,
-                score=score,
-                total_interactions=0,
-                done=done,
-                reward=reward,
+                task_name="", task_difficulty="", patient_id="", patient_age=0,
+                patient_conditions=[], medications=[], num_medications=0,
+                instructions="Call reset() to start.", feedback=feedback,
+                score=score, total_interactions=-1, done=done, reward=reward,
             )
 
         meds = [
             MedicationInfo(
-                name=d.name,
-                therapeutic_class=d.therapeutic_class,
-                common_dose=d.common_dose,
-                frequency=d.frequency,
+                name=d.name, therapeutic_class=d.therapeutic_class,
+                common_dose=d.common_dose, frequency=d.frequency,
             )
             for d in scenario.medications
         ]
 
-        hint_count = len(scenario.ground_truth_interactions) if scenario.task_name == "easy_pair_check" else 0
+        hint_count = len(scenario.ground_truth_interactions) if scenario.task_name == "easy_pair_check" else -1
 
         return PharmaDDIObservation(
             task_name=scenario.task_name,
@@ -387,6 +357,8 @@ class PharmaDDIEnvironment(Environment):
                 "episode_id": self._state.episode_id,
                 "step": self._state.step_count,
                 "task": scenario.task_name,
+                "curriculum_focus": self._current_focus,
+                "curriculum_status": self._curriculum.get_status(),
             },
         )
 
